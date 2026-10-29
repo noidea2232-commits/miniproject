@@ -1,0 +1,6 @@
+{
+  "name": "Taporaa - Smart Biometric Mobility & Fare Platform",
+  "description": "Smart mobility, biometric ticketing & automatic fare management platform for modern metro and transit networks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
