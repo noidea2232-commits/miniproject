@@ -307,15 +307,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ stations, fareRu
     }
   };
 
-  // Safe Passenger Deletion
-  const handleDeletePassenger = async (p: Passenger) => {
-    const confirmed = window.confirm(
-      `Delete passenger '${p.name}' (Fingerprint Slot #${p.fingerprint_id})?\n\nNote: If this passenger has completed journeys or wallet transactions, the account will be safely soft-deactivated to preserve accounting ledgers. If no history exists, it will be permanently deleted.`
-    );
+  // Safe Passenger Deletion with Permanent Force Option
+  const handleDeletePassenger = async (p: Passenger, force = false) => {
+    let confirmPrompt = `Delete passenger '${p.name}' (Slot #${p.fingerprint_id})?\n\n• Click OK to proceed.\n• If this commuter has travel history, you can choose to permanently wipe or safely deactivate.`;
+    if (force || p.status === 'inactive') {
+      confirmPrompt = `⚠️ PERMANENT DELETE:\n\nAre you sure you want to permanently delete '${p.name}' and wipe all records from the database?\n\nAS608 Slot #${p.fingerprint_id} will be freed immediately for new enrollment.`;
+    }
+    const confirmed = window.confirm(confirmPrompt);
     if (!confirmed) return;
 
     try {
-      const res = await api.deletePassenger(p.id, false);
+      const res = await api.deletePassenger(p.id, force || p.status === 'inactive');
+      if (res.mode === 'soft_deactivated') {
+        const wantForce = window.confirm(
+          `Passenger '${p.name}' has existing journey/financial audit history and was soft-deactivated.\n\nDo you want to FORCE PERMANENT DELETE right now and erase all records to completely free Slot #${p.fingerprint_id}?`
+        );
+        if (wantForce) {
+          const forceRes = await api.deletePassenger(p.id, true);
+          showNotification(forceRes.message);
+          await loadAllAdminData();
+          return;
+        }
+      }
       showNotification(res.message);
       await loadAllAdminData();
     } catch (err: any) {

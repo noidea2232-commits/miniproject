@@ -3044,16 +3044,16 @@ app.delete('/api/admin/passenger/:id', requireAdmin, async (req: Request, res: R
       const activeKey = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
       if (forceDelete) {
         // Cascade delete child journeys and transactions for clean test slate
-        await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/wallet_transactions?passenger_id=eq.${pDbId}`, {
+        await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/wallet_transactions?or=(passenger_id.eq.${pDbId},passenger_id.eq.${p.fingerprint_id})`, {
           method: 'DELETE',
           headers: { apikey: activeKey, Authorization: `Bearer ${activeKey}` },
         });
-        await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/journeys?passenger_id=eq.${pDbId}`, {
+        await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/journeys?or=(passenger_id.eq.${pDbId},passenger_id.eq.${p.fingerprint_id})`, {
           method: 'DELETE',
           headers: { apikey: activeKey, Authorization: `Bearer ${activeKey}` },
         });
       }
-      await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/passengers?fingerprint_id=eq.${p.fingerprint_id}`, {
+      await fetch(`${SUPABASE_URL.replace(/\/$/, '')}/rest/v1/passengers?or=(fingerprint_id.eq.${p.fingerprint_id},id.eq.${pDbId})`, {
         method: 'DELETE',
         headers: {
           apikey: activeKey,
@@ -3062,6 +3062,10 @@ app.delete('/api/admin/passenger/:id', requireAdmin, async (req: Request, res: R
       });
     }
 
+    fpIdToPassenger.delete(p.fingerprint_id);
+    dbIdToPassenger.delete(Number(pDbId));
+    fpIdToDbId.delete(p.fingerprint_id);
+    dbIdToFpId.delete(Number(pDbId));
     passengers.splice(pIdx, 1);
 
     addDeviceEvent({
