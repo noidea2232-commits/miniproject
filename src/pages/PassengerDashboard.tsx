@@ -16,6 +16,8 @@ import {
   Smartphone,
   ChevronRight,
   Cpu,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { api } from '../services/api';
 import type { Passenger, Station, Journey, WalletTransaction } from '../types/index';
@@ -56,6 +58,97 @@ export const PassengerDashboard: React.FC<PassengerDashboardProps> = ({ stations
   const [showTopupModal, setShowTopupModal] = useState<boolean>(false);
   const [topupAmount, setTopupAmount] = useState<string>('100');
 
+  // Unknown Fingerprint Security Alert & Audio State
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('taporaa_sound_enabled') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [unknownAlert, setUnknownAlert] = useState<{
+    id: string;
+    timestamp: number;
+    station_name?: string;
+    device_id?: string;
+    message: string;
+  } | null>(null);
+  const [lastPlayedAlertId, setLastPlayedAlertId] = useState<string>('');
+
+  const playAlertSound = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(659.25, ctx.currentTime + 0.12);
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.24);
+      gain.gain.setValueAtTime(0.25, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.46);
+    } catch (e) {
+      console.warn('Audio chime failed:', e);
+    }
+  };
+
+  const toggleSound = () => {
+    const next = !soundEnabled;
+    setSoundEnabled(next);
+    try {
+      localStorage.setItem('taporaa_sound_enabled', String(next));
+    } catch {}
+    if (next) {
+      playAlertSound();
+    }
+  };
+
+  // Poll for unknown fingerprint security alerts
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const res = await api.getUnknownFingerprintAlerts();
+        if (!active) return;
+        if (res.has_alert && res.latest_alert) {
+          setUnknownAlert(res.latest_alert);
+          if (res.latest_alert.id !== lastPlayedAlertId) {
+            setLastPlayedAlertId(res.latest_alert.id);
+            if (soundEnabled) {
+              playAlertSound();
+            }
+          }
+        } else {
+          setUnknownAlert(null);
+        }
+      } catch (err) {
+        // silent fail on network polling
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 2500);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [soundEnabled, lastPlayedAlertId]);
+
+  const handleDismissAlert = async () => {
+    setUnknownAlert(null);
+    try {
+      await api.dismissUnknownAlert();
+    } catch {}
+  };
+
   // Load passenger data
   const loadData = async (targetId = selectedPassengerId) => {
     try {
@@ -76,9 +169,9 @@ export const PassengerDashboard: React.FC<PassengerDashboardProps> = ({ stations
         // Load specific passenger details
         const details = await api.getPassengerDetails(effectiveId);
         setPassenger(details.passenger);
-        setActiveJourney(details.active_journey);
-        setJourneys(details.journeys);
-        setTransactions(details.transactions);
+        setActiveJourney(details.active_journey || null);
+        setJourneys(details.journeys || []);
+        setTransactions(details.transactions || []);
 
         // Live sync balance from Supabase Edge Function
         if (details.passenger?.fingerprint_id) {
@@ -86,9 +179,16 @@ export const PassengerDashboard: React.FC<PassengerDashboardProps> = ({ stations
             const liveLookup = await api.lookupPassenger(details.passenger.fingerprint_id);
             if (liveLookup.recognized && liveLookup.passenger) {
               setPassenger(liveLookup.passenger);
-              if (liveLookup.active_journey) {
-                setActiveJourney(liveLookup.active_journey);
-              }
+              // Reconcile active journey authoritatively (null clears active state)
+              setActiveJourney(liveLookup.active_journey || null);
+              // Keep passenger selector dropdown synchronized with authoritative balance
+              setPassengersList((prev) =>
+                prev.map((p) =>
+                  p.id === liveLookup.passenger.id || p.fingerprint_id === liveLookup.passenger.fingerprint_id
+                    ? { ...p, wallet_balance: liveLookup.passenger.wallet_balance }
+                    : p
+                )
+              );
             }
           } catch {}
         }
@@ -184,9 +284,13 @@ export const PassengerDashboard: React.FC<PassengerDashboardProps> = ({ stations
 
     try {
       setActionLoading(true);
-      await api.topupWallet(passenger.id, amount);
+      setErrorMsg(null);
+      const res = await api.topupWallet(passenger.id, amount);
+      if (res && res.updated_balance !== undefined) {
+        setPassenger((prev) => (prev ? { ...prev, wallet_balance: res.updated_balance } : null));
+      }
       setShowTopupModal(false);
-      setSuccessNotice(`₹${amount} added successfully to wallet!`);
+      setSuccessNotice(`₹${amount} added successfully to wallet! New Balance: ₹${res.updated_balance?.toFixed(2) || (passenger.wallet_balance + amount).toFixed(2)}`);
       await loadData(passenger.id);
     } catch (err: any) {
       setErrorMsg(err.message || 'Top-up failed');
@@ -212,29 +316,90 @@ export const PassengerDashboard: React.FC<PassengerDashboardProps> = ({ stations
           <h1 className="text-2xl font-bold text-white mt-1">Passenger Wallet &amp; Journeys</h1>
         </div>
 
-        {/* Test Passenger Selector */}
-        <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1 text-xs">
-          <span className="text-slate-400 pl-2 text-[11px] font-medium">Switch Passenger:</span>
-          <select
-            value={selectedPassengerId}
-            onChange={(e) => setSelectedPassengerId(e.target.value)}
-            className="bg-slate-950 text-white rounded px-2.5 py-1.5 border border-slate-800 focus:outline-none focus:border-emerald-500 font-medium"
-          >
-            {passengersList.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} (FP #{p.fingerprint_id} · ₹{p.wallet_balance.toFixed(0)}) {p.status !== 'active' ? `[${p.status}]` : ''}
-              </option>
-            ))}
-          </select>
+        {/* Test Passenger Selector & Sound Controls */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Explicit Enable Sound Button (Browser Autoplay Requirement) */}
           <button
-            onClick={() => loadData()}
-            title="Refresh Passenger Data"
-            className="p-1.5 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors cursor-pointer"
+            type="button"
+            onClick={toggleSound}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer ${
+              soundEnabled
+                ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
+                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+            }`}
+            title="Browser audio requires user interaction before sounds can play. Click to enable or test transit alert chime."
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
+            {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> : <VolumeX className="w-3.5 h-3.5 text-slate-400" />}
+            <span>{soundEnabled ? 'Alert Audio ON' : 'Enable Sound'}</span>
           </button>
+
+          <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-lg p-1 text-xs">
+            <span className="text-slate-400 pl-2 text-[11px] font-medium">Switch Passenger:</span>
+            <select
+              value={selectedPassengerId}
+              onChange={(e) => setSelectedPassengerId(e.target.value)}
+              className="bg-slate-950 text-white rounded px-2.5 py-1.5 border border-slate-800 focus:outline-none focus:border-emerald-500 font-medium"
+            >
+              {passengersList.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} (FP #{p.fingerprint_id} · ₹{p.wallet_balance.toFixed(0)}) {p.status !== 'active' ? `[${p.status}]` : ''}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => loadData()}
+              title="Refresh Passenger Data"
+              className="p-1.5 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-emerald-400' : ''}`} />
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* PHASE 3 MANDATORY: PROMINENT UNKNOWN FINGERPRINT WARNING BANNER */}
+      {unknownAlert && (
+        <div className="p-4 rounded-xl bg-red-950/90 border-2 border-red-500 text-red-100 shadow-2xl shadow-red-950/80 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-red-900/80 border border-red-500/60 flex items-center justify-center text-red-300 shrink-0 mt-0.5 sm:mt-0">
+              <AlertCircle className="w-6 h-6 animate-pulse text-red-400" />
+            </div>
+            <div>
+              <div className="text-xs font-mono font-bold text-red-400 uppercase tracking-wider flex items-center gap-2">
+                <span>TERMINAL SECURITY REJECTION</span>
+                <span className="text-slate-500">·</span>
+                <span className="text-red-300 font-normal">{unknownAlert.station_name || 'Station Gate'}</span>
+              </div>
+              <div className="text-base font-bold text-white mt-0.5">
+                Fingerprint not registered. Please contact the administrator.
+              </div>
+              <div className="text-xs text-red-300 font-mono mt-0.5">
+                AS608 sensor rejected biometric match · Transit gate remained locked · No fare deducted.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+            {!soundEnabled && (
+              <button
+                type="button"
+                onClick={toggleSound}
+                className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/40 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Volume2 className="w-3.5 h-3.5" />
+                <span>Turn On Audio</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleDismissAlert}
+              className="px-3 py-1.5 rounded-lg bg-red-900/80 hover:bg-red-800 text-white border border-red-700 text-xs font-medium transition-colors cursor-pointer"
+            >
+              Dismiss Alert
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* State Feedback Banner (PRD Section 5.2 requirement) */}
       <div
@@ -377,13 +542,21 @@ export const PassengerDashboard: React.FC<PassengerDashboardProps> = ({ stations
             <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
               <div className="text-slate-400 text-[11px]">Previous Balance</div>
               <div className="font-mono font-semibold text-slate-300 mt-0.5 tabular-nums">
-                {lastFareTxn ? `₹${lastFareTxn.previous_balance.toFixed(2)}` : '₹500.00'}
+                {lastFareTxn
+                  ? `₹${lastFareTxn.previous_balance.toFixed(2)}`
+                  : passenger
+                  ? `₹${passenger.wallet_balance.toFixed(2)}`
+                  : '₹0.00'}
               </div>
             </div>
             <div className="bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
               <div className="text-slate-400 text-[11px]">Current Balance</div>
               <div className="font-mono font-semibold text-emerald-400 mt-0.5 tabular-nums">
-                {lastFareTxn ? `₹${lastFareTxn.updated_balance.toFixed(2)}` : `₹${passenger?.wallet_balance.toFixed(2) ?? '485.00'}`}
+                {passenger
+                  ? `₹${passenger.wallet_balance.toFixed(2)}`
+                  : lastFareTxn
+                  ? `₹${lastFareTxn.updated_balance.toFixed(2)}`
+                  : '₹0.00'}
               </div>
             </div>
           </div>

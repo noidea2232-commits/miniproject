@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: taporaa-transit-platform
+    env: node
+    plan: free
+    buildCommand: pnpm install && pnpm run build
+    startCommand: pnpm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: BIO_DEVICE_TOKEN
+        sync: false
+      - key: ESP32_DEVICE_TOKEN
+        sync: false
+      - key: ADMIN_ACCESS_PASSCODE
+        value: 123123
